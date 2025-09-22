@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v12
+
+      - name: Configure cache
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      - name: Check formatting
+        run: nix develop --accept-flake-config --command zig fmt --check build.zig build.zig.zon src
+
+      - name: Run flake checks
+        run: nix flake check # Ensures the flake evaluates everywhere before compiling.
+
+      - name: Build
+        run: nix develop --accept-flake-config --command zig build
+
+      - name: Test
+        run: nix develop --accept-flake-config --command zig build test
