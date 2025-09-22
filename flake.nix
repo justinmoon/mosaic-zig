@@ -19,6 +19,7 @@
         };
         zigPkg = pkgs.zigpkgs."0.15.1"; # Keep toolchain pinned to Zig 0.15.1 for reproducibility.
         zlsPkg = pkgs.zls; # Ships Zig Language Server (0.15.0) from the same nixpkgs revision.
+        cargoPkg = pkgs.cargo;
         dollar = "\$";
         ciScript = pkgs.writeShellScriptBin "mosaic-ci" ''
           set -euo pipefail
@@ -35,6 +36,7 @@
           ${zigPkg}/bin/zig fmt --check build.zig build.zig.zon src
           ${zigPkg}/bin/zig build
           ${zigPkg}/bin/zig build test
+          (cd test-vectors && ${cargoPkg}/bin/cargo check)
         '';
       in {
         packages.default = pkgs.stdenv.mkDerivation {
@@ -60,7 +62,7 @@
         packages.zls = zlsPkg;
 
         devShells.default = pkgs.mkShell {
-          buildInputs = [ zigPkg pkgs.pkg-config zlsPkg ];
+          buildInputs = [ zigPkg pkgs.pkg-config zlsPkg cargoPkg pkgs.rustc pkgs.clang pkgs.libclang pkgs.gcc-unwrapped ];
           shellHook = ''
             export ZIG_GLOBAL_CACHE_DIR=$PWD/.zig-cache
             export ZIG_LOCAL_CACHE_DIR=$ZIG_GLOBAL_CACHE_DIR
