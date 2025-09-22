@@ -2,6 +2,7 @@ const std = @import("std");
 const Ed25519 = @import("vendor/ed25519.zig").Ed25519;
 
 pub const z32 = @import("z32.zig");
+pub const printable = @import("printable.zig");
 
 pub const mosaic_context: []const u8 = "Mosaic";
 
