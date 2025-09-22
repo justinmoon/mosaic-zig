@@ -5,6 +5,11 @@ pub const z32 = @import("z32.zig");
 
 pub const mosaic_context: []const u8 = "Mosaic";
 
+pub const timestamp = @import("timestamp.zig");
+pub const Timestamp = timestamp.Timestamp;
+pub const TimestampError = timestamp.TimestampError;
+pub const UnixTime = timestamp.UnixTime;
+
 fn errorSetOf(comptime func: anytype) type {
     const info = @typeInfo(@TypeOf(func));
     return switch (info) {
