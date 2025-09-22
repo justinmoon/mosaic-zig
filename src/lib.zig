@@ -1,5 +1,5 @@
 const std = @import("std");
-const Ed25519 = @import("crypto/vendor/ed25519.zig").Ed25519;
+const Ed25519 = @import("vendor/ed25519.zig").Ed25519;
 
 pub const z32 = @import("z32.zig");
 
@@ -115,5 +115,5 @@ test "ed25519-blake3 sign + verify matches mosaic-core" {
 
     var bad_sig = expected_signature;
     bad_sig[0] ^= 0x01;
-    try std.testing.expectError(error.SignatureVerificationFailed, Ed25519Blake3.verify(message, bad_sig, expected_public));
+    try std.testing.expectError(error.InvalidEncoding, Ed25519Blake3.verify(message, bad_sig, expected_public));
 }
