@@ -86,16 +86,16 @@ fn buildHandshakeHeaders(
     var writer = ListWriter{ .context = &writer_ctx };
 
     try std.fmt.format(writer, "Host: {s}:{d}\r\n", .{ host_header, options.port });
-    try std.fmt.format(writer, "Sec-WebSocket-Protocol: {s}\r\n", .{ options.expected_subprotocol });
-    try std.fmt.format(writer, "X-Mosaic-Versions: {s}\r\n", .{ options.versions });
-    try std.fmt.format(writer, "X-Mosaic-Features: {s}\r\n", .{ options.features });
+    try std.fmt.format(writer, "Sec-WebSocket-Protocol: {s}\r\n", .{options.expected_subprotocol});
+    try std.fmt.format(writer, "X-Mosaic-Versions: {s}\r\n", .{options.versions});
+    try std.fmt.format(writer, "X-Mosaic-Features: {s}\r\n", .{options.features});
 
     if (options.authenticate_as) |auth| {
-        try std.fmt.format(writer, "X-Mosaic-Authenticate-As: {s}\r\n", .{ auth });
+        try std.fmt.format(writer, "X-Mosaic-Authenticate-As: {s}\r\n", .{auth});
     }
 
     if (options.server_auth_nonce) |nonce| {
-        try std.fmt.format(writer, "X-Mosaic-Server-Authenticate-Nonce: {s}\r\n", .{ nonce });
+        try std.fmt.format(writer, "X-Mosaic-Server-Authenticate-Nonce: {s}\r\n", .{nonce});
     }
 
     if (options.extra_headers) |extra| {
@@ -267,7 +267,8 @@ fn runMockServer(server: *std.net.Server, expect: ExpectHeaders) !ServerResult {
     var response_writer_ctx = ArrayListWriter{ .list = &response_builder, .allocator = arena.allocator() };
     const response_writer = ListWriter{ .context = &response_writer_ctx };
 
-    try std.fmt.format(response_writer,
+    try std.fmt.format(
+        response_writer,
         "HTTP/1.1 101 Switching Protocol\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {s}\r\nSec-WebSocket-Protocol: {s}\r\n" ++
             "X-Mosaic-Version: 0\r\nX-Mosaic-Features-Accepted: chat\r\nX-Mosaic-Server-Authentication: sig\r\n" ++
             "X-Mosaic-Client-Authenticate-Nonce: nonce\r\n\r\n",
@@ -292,7 +293,7 @@ test "websocket mosaic handshake demo" {
     const expect = ExpectHeaders{ .versions = "0,1", .features = "chat" };
 
     var ctx = ServerContext{ .server = &server, .expect = expect };
-    const thread = try std.Thread.spawn(.{}, serverThread, .{ &ctx });
+    const thread = try std.Thread.spawn(.{}, serverThread, .{&ctx});
 
     var conn = try connect(std.testing.allocator, "127.0.0.1", .{
         .port = port,
