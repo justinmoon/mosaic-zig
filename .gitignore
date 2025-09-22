@@ -4,3 +4,4 @@ zig-out/
 result
 test-vectors/target/
 .direnv
+worktrees
