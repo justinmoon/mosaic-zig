@@ -6,12 +6,18 @@ const std = @import("std");
 /// crawling the tree ourselves we guarantee that `zig build test` (and CI) runs
 /// the tests for every module in the repository, so new files can never slip
 /// through unnoticed.
+const ModuleImport = struct {
+    name: []const u8,
+    module: *std.Build.Module,
+};
+
 fn addZigTestsForDir(
     b: *std.Build,
     step: *std.Build.Step,
     dir_path: []const u8,
     target: anytype,
     optimize: std.builtin.OptimizeMode,
+    extra_imports: []const ModuleImport,
 ) !void {
     var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
     defer dir.close();
@@ -22,8 +28,9 @@ fn addZigTestsForDir(
 
         switch (entry.kind) {
             .directory => {
+                if (std.mem.eql(u8, entry.name, "vendor")) continue;
                 const sub_path = try std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ dir_path, entry.name });
-                try addZigTestsForDir(b, step, sub_path, target, optimize);
+                try addZigTestsForDir(b, step, sub_path, target, optimize, extra_imports);
             },
             .file => if (std.mem.endsWith(u8, entry.name, ".zig")) {
                 const file_path = try std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ dir_path, entry.name });
@@ -32,6 +39,9 @@ fn addZigTestsForDir(
                     .target = target,
                     .optimize = optimize,
                 });
+                for (extra_imports) |imp| {
+                    module.addImport(imp.name, imp.module);
+                }
                 const test_exe = b.addTest(.{
                     .root_module = module,
                 });
@@ -46,12 +56,26 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const lmdb_dep = b.dependency("lmdb", .{});
+    const lmdb_module = b.createModule(.{
+        .root_source_file = b.path("src/lmdb.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    lmdb_module.addIncludePath(lmdb_dep.path("libraries/liblmdb"));
+    lmdb_module.addCSourceFiles(.{
+        .root = lmdb_dep.path("libraries/liblmdb"),
+        .files = &.{ "mdb.c", "midl.c" },
+    });
+    lmdb_module.link_libc = true;
+
     // Core module shared between the installable library and the test step.
     const lib_module = b.createModule(.{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
     });
+    lib_module.addImport("lmdb", lmdb_module);
 
     const static_lib = b.addLibrary(.{
         .name = "mosaic",
@@ -63,7 +87,8 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&install_lib.step);
 
     const test_step = b.step("test", "Run all Zig tests");
-    addZigTestsForDir(b, test_step, "src", target, optimize) catch |err| {
+    const extra_imports = [_]ModuleImport{.{ .name = "lmdb", .module = lmdb_module }};
+    addZigTestsForDir(b, test_step, "src", target, optimize, extra_imports[0..]) catch |err| {
         std.debug.panic("failed to enumerate tests: {s}", .{@errorName(err)});
     };
 }
