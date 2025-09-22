@@ -13,6 +13,30 @@ const SignatureVerificationError = crypto.errors.SignatureVerificationError;
 const KeyMismatchError = crypto.errors.KeyMismatchError;
 const WeakPublicKeyError = crypto.errors.WeakPublicKeyError;
 
+const PrehashError = error{ ContextTooLong, InvalidPrehashLength };
+
+fn checkContext(context: []const u8) PrehashError!void {
+    if (context.len > 255) return error.ContextTooLong;
+}
+
+fn copyPrehash(prehash: []const u8) PrehashError![64]u8 {
+    if (prehash.len != 64) return error.InvalidPrehashLength;
+    var out: [64]u8 = undefined;
+    mem.copyForwards(u8, out[0..], prehash);
+    return out;
+}
+
+fn updateDom2(hasher: *Sha512, flag: u8, context: []const u8) void {
+    if (flag == 0 and context.len == 0) return;
+    const ctx_len: u8 = @intCast(context.len);
+    hasher.update("SigEd25519 no Ed25519 collisions");
+    hasher.update(&[_]u8{flag});
+    hasher.update(&[_]u8{ctx_len});
+    if (ctx_len != 0) {
+        hasher.update(context);
+    }
+}
+
 /// Ed25519 (EdDSA) signatures.
 pub const Ed25519 = struct {
     /// The underlying elliptic curve.
@@ -233,6 +257,26 @@ pub const Ed25519 = struct {
             st.update(msg);
             try st.verify();
         }
+
+        /// Verify the signature against a prehashed message and context (Ed25519ph).
+        pub fn verifyPrehashed(
+            sig: Signature,
+            prehash: []const u8,
+            public_key: PublicKey,
+            context: []const u8,
+        ) (VerifyError || PrehashError)!void {
+            try checkContext(context);
+            const prehash_array = try copyPrehash(prehash);
+
+            var st = try sig.verifier(public_key);
+            var hasher = Sha512.init(.{});
+            updateDom2(&hasher, 1, context);
+            hasher.update(&sig.r);
+            hasher.update(&public_key.bytes);
+            hasher.update(&prehash_array);
+            st.h = hasher;
+            try st.verify();
+        }
     };
 
     /// An Ed25519 key pair.
@@ -324,6 +368,49 @@ pub const Ed25519 = struct {
                 scalar_and_prefix.scalar,
                 &scalar_and_prefix.prefix,
             );
+        }
+
+        /// Sign a prehashed message using Ed25519ph semantics and an optional context string.
+        pub fn signPrehashed(
+            key_pair: KeyPair,
+            prehash: []const u8,
+            context: []const u8,
+            noise: ?[noise_length]u8,
+        ) (IdentityElementError || NonCanonicalError || KeyMismatchError || WeakPublicKeyError || PrehashError)!Signature {
+            try checkContext(context);
+            if (!mem.eql(u8, &key_pair.secret_key.publicKeyBytes(), &key_pair.public_key.toBytes())) {
+                return error.KeyMismatch;
+            }
+
+            const scalar_and_prefix = key_pair.secret_key.scalarAndPrefix();
+            const prehash_array = try copyPrehash(prehash);
+
+            var nonce_hasher = Sha512.init(.{});
+            updateDom2(&nonce_hasher, 1, context);
+            if (noise) |*z| {
+                nonce_hasher.update(z);
+            }
+            nonce_hasher.update(&scalar_and_prefix.prefix);
+            nonce_hasher.update(&prehash_array);
+            var nonce64: [64]u8 = undefined;
+            nonce_hasher.final(&nonce64);
+            const nonce = Curve.scalar.reduce64(nonce64);
+
+            const r_point = try Curve.basePoint.mul(nonce);
+            const r_bytes = r_point.toBytes();
+
+            var k_hasher = Sha512.init(.{});
+            updateDom2(&k_hasher, 1, context);
+            k_hasher.update(&r_bytes);
+            k_hasher.update(&key_pair.public_key.bytes);
+            k_hasher.update(&prehash_array);
+            var hram64: [64]u8 = undefined;
+            k_hasher.final(&hram64);
+            const k = Curve.scalar.reduce64(hram64);
+
+            const s = Curve.scalar.mulAdd(k, scalar_and_prefix.scalar, nonce);
+
+            return Signature{ .r = r_bytes, .s = s };
         }
 
         /// Create a Signer, that can be used for incremental signing.
@@ -693,6 +780,34 @@ test "signatures with streaming" {
     verifier.update("mess");
     verifier.update("age");
     try verifier.verify();
+}
+
+test "ed25519 prehashed blake3 mosaic compatibility" {
+    const seed = [_]u8{0x2A} ** 32;
+    const key_pair = try Ed25519.KeyPair.generateDeterministic(seed);
+
+    const expected_public = "197F6B23E16C8532C6ABC838FACD5EA789BE0C76B2920334039BFA8B3D368D61";
+    var buf: [256]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        expected_public,
+        try fmt.bufPrint(&buf, "{X}", .{&key_pair.public_key.toBytes()}),
+    );
+
+    var blake = crypto.hash.Blake3.init(.{});
+    blake.update("MosaicTestMessage");
+    var prehash: [64]u8 = undefined;
+    blake.final(prehash[0..]);
+
+    const sig = try key_pair.signPrehashed(prehash[0..], "Mosaic", null);
+    const expected_sig = "CA3083AB722E101E27AD1BBA09367CA3F2DCFFCF201C11B81EB3DA1777F94120787548AE7AB2B5251BEC73100E0D5371695F4D353844AB84BBCC3D5CFAA90307";
+    try std.testing.expectEqualStrings(expected_sig, try fmt.bufPrint(&buf, "{X}", .{&sig.toBytes()}));
+
+    try sig.verifyPrehashed(prehash[0..], key_pair.public_key, "Mosaic");
+    try std.testing.expectError(error.SignatureVerificationFailed, sig.verifyPrehashed(prehash[0..], key_pair.public_key, "Mosa1c"));
+    try std.testing.expectError(PrehashError.InvalidPrehashLength, key_pair.signPrehashed(prehash[0..10], "Mosaic", null));
+
+    var long_ctx = [_]u8{0} ** 256;
+    try std.testing.expectError(PrehashError.ContextTooLong, key_pair.signPrehashed(prehash[0..], long_ctx[0..], null));
 }
 
 test "key pair from secret key" {
