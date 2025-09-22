@@ -2,4 +2,5 @@ zig-cache/
 .zig-cache/
 zig-out/
 result
+test-vectors/target/
 .direnv

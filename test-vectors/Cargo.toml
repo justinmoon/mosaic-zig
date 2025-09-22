@@ -1,0 +1,10 @@
+[package]
+name = "mosaic-zig-test-vectors"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+mosaic-core = { git = "https://github.com/justinmoon/mosaic-core.git", rev = "7aea108f49c2b9b17e0ee547b6e4dd3f55610676" }
