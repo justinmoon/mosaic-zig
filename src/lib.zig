@@ -1,5 +1,5 @@
 const std = @import("std");
-const Ed25519 = @import("crypto/vendor/ed25519.zig").Ed25519;
+const Ed25519 = @import("vendor/ed25519.zig").Ed25519;
 
 pub const z32 = @import("z32.zig");
 
