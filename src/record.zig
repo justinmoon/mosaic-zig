@@ -1,5 +1,5 @@
 const std = @import("std");
-const ed25519_mod = @import("crypto/ed25519_blake3.zig");
+const ed25519_mod = @import("crypto.zig");
 const Ed25519 = @import("vendor/ed25519.zig").Ed25519;
 
 pub const MAX_RECORD_SIZE: usize = 1_048_576;
@@ -22,11 +22,13 @@ inline fn paddedLen(len: usize) usize {
 }
 
 inline fn readLittle(comptime T: type, bytes: []const u8, offset: usize) T {
-    return std.mem.readIntLittle(T, bytes[offset .. offset + @sizeOf(T)]);
+    const len = @sizeOf(T);
+    return std.mem.readInt(T, bytes[offset .. offset + len], .little);
 }
 
 inline fn readBig(comptime T: type, bytes: []const u8, offset: usize) T {
-    return std.mem.readIntBig(T, bytes[offset .. offset + @sizeOf(T)]);
+    const len = @sizeOf(T);
+    return std.mem.readInt(T, bytes[offset .. offset + len], .big);
 }
 
 pub const RecordError = error{
@@ -83,11 +85,11 @@ pub const Record = struct {
         if ((bytes[ID_TIMESTAMP_OFFSET] & 0x80) != 0) return error.InvalidIdTimestampMsb;
 
         var signing_key_bytes: [Ed25519.PublicKey.encoded_length]u8 = undefined;
-        std.mem.copy(u8, &signing_key_bytes, bytes[SIGNING_KEY_OFFSET .. SIGNING_KEY_OFFSET + signing_key_bytes.len]);
+        std.mem.copyForwards(u8, &signing_key_bytes, bytes[SIGNING_KEY_OFFSET .. SIGNING_KEY_OFFSET + signing_key_bytes.len]);
         const signing_key = Ed25519.PublicKey.fromBytes(signing_key_bytes) catch return error.InvalidSigningKey;
 
         var author_key_bytes: [Ed25519.PublicKey.encoded_length]u8 = undefined;
-        std.mem.copy(u8, &author_key_bytes, bytes[AUTHOR_KEY_OFFSET .. AUTHOR_KEY_OFFSET + author_key_bytes.len]);
+        std.mem.copyForwards(u8, &author_key_bytes, bytes[AUTHOR_KEY_OFFSET .. AUTHOR_KEY_OFFSET + author_key_bytes.len]);
         _ = Ed25519.PublicKey.fromBytes(author_key_bytes) catch return error.InvalidAuthorKey;
 
         const hash_end = HEADER_LEN + len_t_padded + len_p_padded;
@@ -100,7 +102,7 @@ pub const Record = struct {
 
         const sig_start = hash_end;
         var signature_bytes: [Ed25519.Signature.encoded_length]u8 = undefined;
-        std.mem.copy(u8, &signature_bytes, bytes[sig_start .. sig_start + signature_bytes.len]);
+        std.mem.copyForwards(u8, &signature_bytes, bytes[sig_start .. sig_start + signature_bytes.len]);
         const signature = Ed25519.Signature.fromBytes(signature_bytes);
         signature.verifyPrehashed(true_hash[0..], signing_key, ed25519_mod.mosaic_context) catch return error.SignatureVerificationFailed;
 
@@ -146,13 +148,13 @@ pub const Record = struct {
 
     pub fn signingPublicKey(self: Record) [Ed25519.PublicKey.encoded_length]u8 {
         var out: [Ed25519.PublicKey.encoded_length]u8 = undefined;
-        std.mem.copy(u8, &out, self.bytes[SIGNING_KEY_OFFSET .. SIGNING_KEY_OFFSET + out.len]);
+        std.mem.copyForwards(u8, &out, self.bytes[SIGNING_KEY_OFFSET .. SIGNING_KEY_OFFSET + out.len]);
         return out;
     }
 
     pub fn authorPublicKey(self: Record) [Ed25519.PublicKey.encoded_length]u8 {
         var out: [Ed25519.PublicKey.encoded_length]u8 = undefined;
-        std.mem.copy(u8, &out, self.bytes[AUTHOR_KEY_OFFSET .. AUTHOR_KEY_OFFSET + out.len]);
+        std.mem.copyForwards(u8, &out, self.bytes[AUTHOR_KEY_OFFSET .. AUTHOR_KEY_OFFSET + out.len]);
         return out;
     }
 };
@@ -177,9 +179,18 @@ fn validateFlags(flags: u64) RecordError!void {
     if (flag1 != 0 or flag2 != 0) return error.ReservedFlagsSet;
 }
 
+fn hexToBytesAlloc(allocator: std.mem.Allocator, hex: []const u8) ![]u8 {
+    if (hex.len % 2 != 0) return error.InvalidLength;
+    const out = try allocator.alloc(u8, hex.len / 2);
+    errdefer allocator.free(out);
+    _ = try std.fmt.hexToBytes(out, hex);
+    return out;
+}
+
 test "record validator accepts known record" {
     const gpa = std.testing.allocator;
-    const json_bytes = @embedFile("../testdata/test_vectors.json");
+    const json_bytes = try std.fs.cwd().readFileAlloc(gpa, "testdata/test_vectors.json", 1 << 20);
+    defer gpa.free(json_bytes);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, json_bytes, .{});
     defer parsed.deinit();
@@ -187,7 +198,7 @@ test "record validator accepts known record" {
     const record_hex_value = parsed.value.object.get("record").?.object.get("record_hex").?;
     const record_hex = record_hex_value.string;
 
-    const record_bytes = try std.fmt.hexToBytes(gpa, record_hex);
+    const record_bytes = try hexToBytesAlloc(gpa, record_hex);
     defer gpa.free(record_bytes);
 
     const rec = try Record.fromBytes(record_bytes);
@@ -206,4 +217,5 @@ test "record validator accepts known record" {
     const payload_index = HEADER_LEN + paddedLen(rec.len_t);
     tampered_payload[payload_index] ^= 0x01;
     try std.testing.expectError(error.HashMismatch, Record.fromBytes(tampered_payload));
+
 }
