@@ -3,6 +3,11 @@ const Ed25519 = @import("crypto/vendor/ed25519.zig").Ed25519;
 
 pub const mosaic_context: []const u8 = "Mosaic";
 
+pub const timestamp = @import("timestamp.zig");
+pub const Timestamp = timestamp.Timestamp;
+pub const TimestampError = timestamp.TimestampError;
+pub const UnixTime = timestamp.UnixTime;
+
 fn errorSetOf(comptime func: anytype) type {
     const info = @typeInfo(@TypeOf(func));
     return switch (info) {
