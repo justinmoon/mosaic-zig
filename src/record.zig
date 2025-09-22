@@ -217,5 +217,4 @@ test "record validator accepts known record" {
     const payload_index = HEADER_LEN + paddedLen(rec.len_t);
     tampered_payload[payload_index] ^= 0x01;
     try std.testing.expectError(error.HashMismatch, Record.fromBytes(tampered_payload));
-
 }
