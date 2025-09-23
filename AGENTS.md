@@ -1,1 +1,1 @@
-../AGENTS.md
+/Users/justin/code/mosaic/mosaic-zig/AGENTS.md
