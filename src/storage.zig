@@ -10,6 +10,7 @@ const ADDRESS_OFFSET = 48;
 const ADDRESS_LEN = 48;
 const TIMESTAMP_BYTES = 8;
 const KIND_BYTES = 8;
+const MAX_TIMESTAMP: u64 = 0x7fffffffffffffff;
 
 const DB_RECORDS = "records";
 const DB_ADDRESS = "idx_address";
@@ -180,14 +181,15 @@ pub const Storage = struct {
 
         var search_key: [KIND_BYTES + TIMESTAMP_BYTES + ID_LEN]u8 = undefined;
         std.mem.writeInt(u64, search_key[0..KIND_BYTES], kind, .big);
-        std.mem.writeInt(u64, search_key[KIND_BYTES .. KIND_BYTES + TIMESTAMP_BYTES], since, .big);
+        std.mem.writeInt(u64, search_key[KIND_BYTES .. KIND_BYTES + TIMESTAMP_BYTES], invertTimestamp(until), .big);
         @memset(search_key[KIND_BYTES + TIMESTAMP_BYTES ..], 0);
 
         var current = try cursor.seek(search_key[0..]);
         while (current) |key| {
             if (!std.mem.eql(u8, key[0..KIND_BYTES], search_key[0..KIND_BYTES])) break;
-            const ts = std.mem.readInt(u64, key[KIND_BYTES .. KIND_BYTES + TIMESTAMP_BYTES], .big);
-            if (ts > until) break;
+            const stored_ts = std.mem.readInt(u64, key[KIND_BYTES .. KIND_BYTES + TIMESTAMP_BYTES], .big);
+            const actual_ts = invertTimestamp(stored_ts);
+            if (actual_ts < since) break;
             const record_id = try cursor.getCurrentValue();
             const owned_record = try copyRecord(allocator, records_db, record_id);
             try results.append(owned_record);
@@ -220,13 +222,14 @@ pub const Storage = struct {
         errdefer results.deinit();
 
         var search_key: [TIMESTAMP_BYTES + ID_LEN]u8 = undefined;
-        std.mem.writeInt(u64, search_key[0..TIMESTAMP_BYTES], since, .big);
+        std.mem.writeInt(u64, search_key[0..TIMESTAMP_BYTES], invertTimestamp(until), .big);
         @memset(search_key[TIMESTAMP_BYTES..], 0);
 
         var current = try cursor.seek(search_key[0..]);
         while (current) |key| {
-            const ts = std.mem.readInt(u64, key[0..TIMESTAMP_BYTES], .big);
-            if (ts > until) break;
+            const stored_ts = std.mem.readInt(u64, key[0..TIMESTAMP_BYTES], .big);
+            const actual_ts = invertTimestamp(stored_ts);
+            if (actual_ts < since) break;
             const record_id = try cursor.getCurrentValue();
             const owned_record = try copyRecord(allocator, records_db, record_id);
             try results.append(owned_record);
@@ -261,19 +264,19 @@ pub const Storage = struct {
         const timestamp = rec.timestamp();
 
         var ts_key: [TIMESTAMP_BYTES + ID_LEN]u8 = undefined;
-        std.mem.writeInt(u64, ts_key[0..TIMESTAMP_BYTES], timestamp, .big);
+        std.mem.writeInt(u64, ts_key[0..TIMESTAMP_BYTES], invertTimestamp(timestamp), .big);
         std.mem.copyForwards(u8, ts_key[TIMESTAMP_BYTES..], id_slice);
         try timestamp_db.set(ts_key[0..], id_slice);
 
         var address_key: [ADDRESS_LEN + TIMESTAMP_BYTES + ID_LEN]u8 = undefined;
         std.mem.copyForwards(u8, address_key[0..ADDRESS_LEN], rec.bytes[ADDRESS_OFFSET .. ADDRESS_OFFSET + ADDRESS_LEN]);
-        std.mem.writeInt(u64, address_key[ADDRESS_LEN .. ADDRESS_LEN + TIMESTAMP_BYTES], timestamp, .big);
+        std.mem.writeInt(u64, address_key[ADDRESS_LEN .. ADDRESS_LEN + TIMESTAMP_BYTES], invertTimestamp(timestamp), .big);
         std.mem.copyForwards(u8, address_key[ADDRESS_LEN + TIMESTAMP_BYTES ..], id_slice);
         try address_db.set(address_key[0..], id_slice);
 
         var kind_key: [KIND_BYTES + TIMESTAMP_BYTES + ID_LEN]u8 = undefined;
         std.mem.writeInt(u64, kind_key[0..KIND_BYTES], rec.kind(), .big);
-        std.mem.writeInt(u64, kind_key[KIND_BYTES .. KIND_BYTES + TIMESTAMP_BYTES], timestamp, .big);
+        std.mem.writeInt(u64, kind_key[KIND_BYTES .. KIND_BYTES + TIMESTAMP_BYTES], invertTimestamp(timestamp), .big);
         std.mem.copyForwards(u8, kind_key[KIND_BYTES + TIMESTAMP_BYTES ..], id_slice);
         try kind_db.set(kind_key[0..], id_slice);
     }
@@ -292,19 +295,19 @@ pub const Storage = struct {
         const timestamp = rec.timestamp();
 
         var ts_key: [TIMESTAMP_BYTES + ID_LEN]u8 = undefined;
-        std.mem.writeInt(u64, ts_key[0..TIMESTAMP_BYTES], timestamp, .big);
+        std.mem.writeInt(u64, ts_key[0..TIMESTAMP_BYTES], invertTimestamp(timestamp), .big);
         std.mem.copyForwards(u8, ts_key[TIMESTAMP_BYTES..], id_slice);
         try timestamp_db.delete(ts_key[0..]);
 
         var address_key: [ADDRESS_LEN + TIMESTAMP_BYTES + ID_LEN]u8 = undefined;
         std.mem.copyForwards(u8, address_key[0..ADDRESS_LEN], rec.bytes[ADDRESS_OFFSET .. ADDRESS_OFFSET + ADDRESS_LEN]);
-        std.mem.writeInt(u64, address_key[ADDRESS_LEN .. ADDRESS_LEN + TIMESTAMP_BYTES], timestamp, .big);
+        std.mem.writeInt(u64, address_key[ADDRESS_LEN .. ADDRESS_LEN + TIMESTAMP_BYTES], invertTimestamp(timestamp), .big);
         std.mem.copyForwards(u8, address_key[ADDRESS_LEN + TIMESTAMP_BYTES ..], id_slice);
         try address_db.delete(address_key[0..]);
 
         var kind_key: [KIND_BYTES + TIMESTAMP_BYTES + ID_LEN]u8 = undefined;
         std.mem.writeInt(u64, kind_key[0..KIND_BYTES], rec.kind(), .big);
-        std.mem.writeInt(u64, kind_key[KIND_BYTES .. KIND_BYTES + TIMESTAMP_BYTES], timestamp, .big);
+        std.mem.writeInt(u64, kind_key[KIND_BYTES .. KIND_BYTES + TIMESTAMP_BYTES], invertTimestamp(timestamp), .big);
         std.mem.copyForwards(u8, kind_key[KIND_BYTES + TIMESTAMP_BYTES ..], id_slice);
         try kind_db.delete(kind_key[0..]);
     }
@@ -366,6 +369,11 @@ const RecordListBuilder = struct {
 fn copyRecord(allocator: std.mem.Allocator, db: lmdb.Database, id: []const u8) Error![]u8 {
     const value = try db.get(id) orelse return error.DataCorruption;
     return allocator.dupe(u8, value);
+}
+
+inline fn invertTimestamp(timestamp: u64) u64 {
+    std.debug.assert(timestamp <= MAX_TIMESTAMP);
+    return MAX_TIMESTAMP - timestamp;
 }
 
 test "storage put and fetch by id" {
@@ -447,6 +455,77 @@ test "storage delete removes indexes" {
     const maybe = try storage.getById(allocator, record_bytes[0..ID_LEN]);
     defer if (maybe) |value| allocator.free(value);
     try std.testing.expect(maybe == null);
+}
+
+test "storage queries return newest records first" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("db");
+    const db_path = try tmp.dir.realpathAlloc(allocator, "db");
+    defer allocator.free(db_path);
+
+    var storage = try Storage.init(allocator, .{ .path = db_path });
+    defer storage.deinit();
+
+    const record_hexes = [_][]const u8{
+        "000000630001001cabddc2ef3be7fe4ab2948aa0c343fcf602d0367c26f7fba0857630265ee1e10439a28158e933e502f1e0a99173564931000000630001001c8bb8fc870c6fe2495464f31c5000201c05a42c08e5c19c542cab41613e71e3998bb8fc870c6fe2495464f31c5000201c05a42c08e5c19c542cab41613e71e399000000630001001c0000000000000000000040000b00000068656c6c6f20776f726c640000000000e0536c568c38f2e14d31caa086cc1700dcb280c2d502d5ec313870e3d5713b5e4d79f4e0492c95ef9187f1287f3677911c9790a81b052345fe219827dcf16406",
+        "000000630010425ca583635b9f310d30c676c68d01e9d07aeb6ab794a392f19cd8ac5f43241bd60619269e3a97139518f1e0a99173564931000000630001001c8bb8fc870c6fe2495464f31c5000201c05a42c08e5c19c542cab41613e71e3998bb8fc870c6fe2495464f31c5000201c05a42c08e5c19c542cab41613e71e399000000630010425c0000000000000000000040000d0000006e65776572207061796c6f616400000029fc29549ea6a2d727a8639aaf7096c868564c7a03c705fd6cf5133921de70c3e3eceed73eee2a608597db92a0649ecce0a7266ed54e10eb6a341595e5c3a707",
+        "00000063001f849c7f26a75a8640c7724af3339d2de60d5bd023f468b6eda8011d41bad384a3c8f9e4cdb4af397fe312f1e0a99173564931000000630001001c8bb8fc870c6fe2495464f31c5000201c05a42c08e5c19c542cab41613e71e3998bb8fc870c6fe2495464f31c5000201c05a42c08e5c19c542cab41613e71e39900000063001f849c0000000000000000000040000e0000006e6577657374207061796c6f6164000081ac5df4ea86612e7e81afafb575cee0eb375500f601d425fbffbf0033721b7b515784cc45c76216e316c9fee71896275aa7f0f8f87aaf88e470fed1c86be00b",
+    };
+
+    var record_bytes: [record_hexes.len][]u8 = undefined;
+    defer {
+        for (record_bytes) |bytes| {
+            allocator.free(bytes);
+        }
+    }
+
+    inline for (record_hexes, 0..) |hex, idx| {
+        const bytes = try hexToBytesAlloc(allocator, hex);
+        record_bytes[idx] = bytes;
+        try storage.put(bytes);
+    }
+
+    const rec0 = try Record.fromBytes(record_bytes[0]);
+    const rec2 = try Record.fromBytes(record_bytes[2]);
+
+    var by_address = try storage.getByAddress(
+        allocator,
+        rec0.bytes[ADDRESS_OFFSET .. ADDRESS_OFFSET + ADDRESS_LEN],
+        3,
+    );
+    defer by_address.deinit();
+    try std.testing.expectEqual(@as(usize, 3), by_address.items.len);
+    try std.testing.expectEqualSlices(u8, record_bytes[2], by_address.items[0].bytes);
+    try std.testing.expectEqualSlices(u8, record_bytes[1], by_address.items[1].bytes);
+    try std.testing.expectEqualSlices(u8, record_bytes[0], by_address.items[2].bytes);
+
+    var by_kind = try storage.getByKind(
+        allocator,
+        rec0.kind(),
+        rec0.timestamp(),
+        rec2.timestamp(),
+        3,
+    );
+    defer by_kind.deinit();
+    try std.testing.expectEqual(@as(usize, 3), by_kind.items.len);
+    try std.testing.expectEqualSlices(u8, record_bytes[2], by_kind.items[0].bytes);
+    try std.testing.expectEqualSlices(u8, record_bytes[1], by_kind.items[1].bytes);
+    try std.testing.expectEqualSlices(u8, record_bytes[0], by_kind.items[2].bytes);
+
+    var by_timestamp = try storage.getByTimestamp(
+        allocator,
+        rec0.timestamp(),
+        rec2.timestamp(),
+        3,
+    );
+    defer by_timestamp.deinit();
+    try std.testing.expectEqual(@as(usize, 3), by_timestamp.items.len);
+    try std.testing.expectEqualSlices(u8, record_bytes[2], by_timestamp.items[0].bytes);
+    try std.testing.expectEqualSlices(u8, record_bytes[1], by_timestamp.items[1].bytes);
+    try std.testing.expectEqualSlices(u8, record_bytes[0], by_timestamp.items[2].bytes);
 }
 
 fn loadTestRecord(allocator: std.mem.Allocator) ![]u8 {
