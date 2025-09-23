@@ -146,7 +146,8 @@ pub const App = struct {
             try harvestRecords(self.allocator, &conn, storage_ptr);
         }
 
-        var records = try storage_ptr.getByTimestamp(self.allocator, 0, std.math.maxInt(u64), options.limit);
+        const max_ts = @as(u64, @intCast(timestamp_ns.Timestamp.max.asNanoseconds()));
+        var records = try storage_ptr.getByTimestamp(self.allocator, 0, max_ts, options.limit);
         defer records.deinit();
 
         for (records.items) |item| {
@@ -236,17 +237,19 @@ fn sendGet(conn: *transport.Connection, references: []const protocol.Reference) 
 }
 
 fn harvestRecords(allocator: Allocator, conn: *transport.Connection, storage: *storage_ns.Storage) !void {
-    var iterations: usize = 0;
-    while (iterations < 32) : (iterations += 1) {
+    while (true) {
         var msg = conn.recvMessage() catch |err| {
             if (err == error.ConnectionClosed) break;
             return err;
         };
         defer msg.deinit(allocator);
         switch (msg) {
-            .record => |record_msg| try storage.put(record_msg.record_bytes),
-            .submission_result => {},
-            .hello_ack => {},
+            .record => |record_msg| {
+                try storage.put(record_msg.record_bytes);
+                continue;
+            },
+            .submission_result => continue,
+            .hello_ack => continue,
             else => break,
         }
     }
