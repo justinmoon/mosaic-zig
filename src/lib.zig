@@ -2,6 +2,7 @@ const crypto_mod = @import("crypto.zig");
 
 pub const z32 = @import("z32.zig");
 pub const printable = @import("printable.zig");
+pub const filter = @import("filter.zig");
 
 pub const timestamp = @import("timestamp.zig");
 pub const Timestamp = timestamp.Timestamp;
