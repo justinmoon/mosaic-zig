@@ -168,15 +168,11 @@ fn computeTrueHash(bytes: []const u8, end_index: usize) [64]u8 {
 }
 
 fn validateFlags(flags: u64) RecordError!void {
-    const flag0: u8 = @truncate(flags);
-    const allowed_flag0_mask: u8 = 0x01 | 0x04 | 0x40 | 0x80;
-    if ((flag0 & ~allowed_flag0_mask) != 0) return error.ReservedFlagsSet;
-    const scheme_bits = (flag0 >> 6) & 0b11;
-    if (scheme_bits != 0) return error.UnsupportedSignatureScheme;
+    const allowed_mask: u64 = 0x01 | 0x04 | 0x40 | 0x80;
+    if ((flags & ~allowed_mask) != 0) return error.ReservedFlagsSet;
 
-    const flag1: u8 = @truncate(flags >> 8);
-    const flag2: u8 = @truncate(flags >> 16);
-    if (flag1 != 0 or flag2 != 0) return error.ReservedFlagsSet;
+    const scheme_bits = (flags >> 6) & 0b11;
+    if (scheme_bits != 0) return error.UnsupportedSignatureScheme;
 }
 
 fn hexToBytesAlloc(allocator: std.mem.Allocator, hex: []const u8) ![]u8 {
@@ -187,18 +183,23 @@ fn hexToBytesAlloc(allocator: std.mem.Allocator, hex: []const u8) ![]u8 {
     return out;
 }
 
-test "record validator accepts known record" {
-    const gpa = std.testing.allocator;
-    const json_bytes = try std.fs.cwd().readFileAlloc(gpa, "testdata/test_vectors.json", 1 << 20);
-    defer gpa.free(json_bytes);
+fn loadRecordFixture(allocator: std.mem.Allocator) ![]u8 {
+    const json_bytes = try std.fs.cwd().readFileAlloc(allocator, "testdata/test_vectors.json", 1 << 20);
+    defer allocator.free(json_bytes);
 
-    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, json_bytes, .{});
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_bytes, .{});
     defer parsed.deinit();
 
     const record_hex_value = parsed.value.object.get("record").?.object.get("record_hex").?;
     const record_hex = record_hex_value.string;
+    const record_bytes = try hexToBytesAlloc(allocator, record_hex);
+    errdefer allocator.free(record_bytes);
+    return record_bytes;
+}
 
-    const record_bytes = try hexToBytesAlloc(gpa, record_hex);
+test "record validator accepts known record" {
+    const gpa = std.testing.allocator;
+    const record_bytes = try loadRecordFixture(gpa);
     defer gpa.free(record_bytes);
 
     const rec = try Record.fromBytes(record_bytes);
@@ -217,4 +218,59 @@ test "record validator accepts known record" {
     const payload_index = HEADER_LEN + paddedLen(rec.len_t);
     tampered_payload[payload_index] ^= 0x01;
     try std.testing.expectError(error.HashMismatch, Record.fromBytes(tampered_payload));
+}
+
+test "record validator rejects reserved flag bits" {
+    const gpa = std.testing.allocator;
+    const record_bytes = try loadRecordFixture(gpa);
+    defer gpa.free(record_bytes);
+
+    var mutated = try gpa.dupe(u8, record_bytes);
+    defer gpa.free(mutated);
+    mutated[FLAGS_OFFSET + 3] ^= 0x01;
+    try std.testing.expectError(error.ReservedFlagsSet, Record.fromBytes(mutated));
+}
+
+test "record validator rejects unsupported signature scheme" {
+    const gpa = std.testing.allocator;
+    const record_bytes = try loadRecordFixture(gpa);
+    defer gpa.free(record_bytes);
+
+    var mutated = try gpa.dupe(u8, record_bytes);
+    defer gpa.free(mutated);
+    mutated[FLAGS_OFFSET] |= 0x40;
+    try std.testing.expectError(error.UnsupportedSignatureScheme, Record.fromBytes(mutated));
+}
+
+test "record validator catches header length mismatch" {
+    const gpa = std.testing.allocator;
+    const record_bytes = try loadRecordFixture(gpa);
+    defer gpa.free(record_bytes);
+
+    var mutated = try gpa.dupe(u8, record_bytes);
+    defer gpa.free(mutated);
+    std.mem.writeInt(u16, mutated[LEN_T_OFFSET .. LEN_T_OFFSET + 2], 8, .little);
+    try std.testing.expectError(error.LengthMismatch, Record.fromBytes(mutated));
+}
+
+test "record validator rejects unexpected signature length" {
+    const gpa = std.testing.allocator;
+    const record_bytes = try loadRecordFixture(gpa);
+    defer gpa.free(record_bytes);
+
+    const truncated_len = record_bytes.len - Ed25519.Signature.encoded_length;
+    var truncated = try gpa.alloc(u8, truncated_len);
+    defer gpa.free(truncated);
+    std.mem.copyForwards(u8, truncated, record_bytes[0..truncated_len]);
+    std.mem.writeInt(u16, truncated[LEN_S_OFFSET .. LEN_S_OFFSET + 2], 0, .little);
+    try std.testing.expectError(error.SignatureLengthMismatch, Record.fromBytes(truncated));
+}
+
+test "validateFlags accepts zstd/from_author combinations" {
+    try validateFlags(0x00);
+    try validateFlags(0x01);
+    try validateFlags(0x04);
+    try validateFlags(0x05);
+    try std.testing.expectError(error.UnsupportedSignatureScheme, validateFlags(0x40));
+    try std.testing.expectError(error.ReservedFlagsSet, validateFlags(0x100));
 }
