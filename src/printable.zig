@@ -181,3 +181,10 @@ test "invalid prefix rejected" {
 test "truncated payload rejected" {
     try std.testing.expectError(error.InvalidLength, decodeUserPublicKey(mopub_example[0 .. mopub_example.len - 1]));
 }
+
+test "checksum mismatch rejected" {
+    var buf: [mopub_example.len]u8 = undefined;
+    @memcpy(buf[0..], mopub_example);
+    buf[buf.len - 1] = if (buf[buf.len - 1] == 'a') 'b' else 'a';
+    try std.testing.expectError(error.InvalidChecksum, decodeUserPublicKey(buf[0..]));
+}

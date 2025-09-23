@@ -440,6 +440,19 @@ fn hexToBytesAlloc(allocator: std.mem.Allocator, hex: []const u8) ![]u8 {
     return out;
 }
 
+fn loadProtocolFrame(allocator: std.mem.Allocator, key: []const u8) ![]u8 {
+    const frames_json = try std.fs.cwd().readFileAlloc(allocator, "testdata/protocol_frames.json", 1 << 20);
+    defer allocator.free(frames_json);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, frames_json, .{});
+    defer parsed.deinit();
+
+    const hex = parsed.value.object.get(key).?.string;
+    const bytes = try hexToBytesAlloc(allocator, hex);
+    errdefer allocator.free(bytes);
+    return bytes;
+}
+
 test "protocol framing round trips golden frames" {
     const gpa = std.testing.allocator;
     const frames_json = try std.fs.cwd().readFileAlloc(gpa, "testdata/protocol_frames.json", 1 << 20);
@@ -547,4 +560,79 @@ test "protocol framing round trips golden frames" {
     const submission_result_encoded = try encodeMessage(gpa, submission_result_msg);
     defer gpa.free(submission_result_encoded);
     try std.testing.expectEqualSlices(u8, submission_result_bytes, submission_result_encoded);
+}
+
+test "protocol decode rejects reserved bits in hello" {
+    const gpa = std.testing.allocator;
+    const hello_bytes = try loadProtocolFrame(gpa, "hello");
+    defer gpa.free(hello_bytes);
+
+    var mutated = try gpa.dupe(u8, hello_bytes);
+    defer gpa.free(mutated);
+    mutated[1] = 0x01;
+    try std.testing.expectError(error.ReservedBitsSet, decodeMessage(gpa, mutated));
+}
+
+test "protocol decode rejects invalid application word count" {
+    const gpa = std.testing.allocator;
+    const hello_bytes = try loadProtocolFrame(gpa, "hello");
+    defer gpa.free(hello_bytes);
+
+    const new_len = hello_bytes.len - 2;
+    var truncated = try gpa.alloc(u8, new_len);
+    defer gpa.free(truncated);
+    std.mem.copyForwards(u8, truncated, hello_bytes[0..new_len]);
+    writeU32le(truncated[4..8], @intCast(new_len));
+    try std.testing.expectError(error.InvalidApplicationBytes, decodeMessage(gpa, truncated));
+}
+
+test "protocol decode rejects invalid get reference length" {
+    const gpa = std.testing.allocator;
+    const get_bytes = try loadProtocolFrame(gpa, "get");
+    defer gpa.free(get_bytes);
+
+    const new_len = get_bytes.len - 1;
+    var truncated = try gpa.alloc(u8, new_len);
+    defer gpa.free(truncated);
+    std.mem.copyForwards(u8, truncated, get_bytes[0..new_len]);
+    writeU32le(truncated[4..8], @intCast(new_len));
+    try std.testing.expectError(error.InvalidReferenceLength, decodeMessage(gpa, truncated));
+}
+
+test "protocol decode rejects submission_result reserved bits" {
+    const gpa = std.testing.allocator;
+    const result_bytes = try loadProtocolFrame(gpa, "submission_result");
+    defer gpa.free(result_bytes);
+
+    var mutated = try gpa.dupe(u8, result_bytes);
+    defer gpa.free(mutated);
+    mutated[2] = 0x01;
+    try std.testing.expectError(error.ReservedBitsSet, decodeMessage(gpa, mutated));
+}
+
+test "protocol decode rejects submission_result id prefix with high bit" {
+    const gpa = std.testing.allocator;
+    const result_bytes = try loadProtocolFrame(gpa, "submission_result");
+    defer gpa.free(result_bytes);
+
+    var mutated = try gpa.dupe(u8, result_bytes);
+    defer gpa.free(mutated);
+    mutated[8] |= 0x80;
+    try std.testing.expectError(error.InvalidIdPrefix, decodeMessage(gpa, mutated));
+}
+
+test "protocol decode rejects invalid result codes" {
+    const gpa = std.testing.allocator;
+    const hello_ack_bytes = try loadProtocolFrame(gpa, "hello_ack");
+    defer gpa.free(hello_ack_bytes);
+
+    var unknown = try gpa.dupe(u8, hello_ack_bytes);
+    defer gpa.free(unknown);
+    unknown[1] = 0xFF;
+    try std.testing.expectError(error.UnknownResultCode, decodeMessage(gpa, unknown));
+
+    var zero = try gpa.dupe(u8, hello_ack_bytes);
+    defer gpa.free(zero);
+    zero[1] = 0x00;
+    try std.testing.expectError(error.InvalidResultCode, decodeMessage(gpa, zero));
 }
