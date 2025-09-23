@@ -114,7 +114,9 @@ pub const HelloState = struct {
     ) !HelloState {
         var auth_copy: ?[]u8 = null;
         if (options.authenticate_as) |auth| {
-            auth_copy = try allocator.dupe(u8, auth);
+            const dup = try allocator.dupe(u8, auth);
+            errdefer allocator.free(dup);
+            auth_copy = dup;
         }
 
         var auth_state: ?*ClientAuth = null;
@@ -140,6 +142,7 @@ pub const HelloState = struct {
             defer @memset(seed[0..], 0);
 
             var key_pair = try Ed25519Blake3.KeyPair.fromSeed(seed);
+            errdefer zeroKeyPair(&key_pair);
             const derived_public = key_pair.publicKeyBytes();
             const expected_public = try printable.decodeUserPublicKey(options.authenticate_as.?);
             if (!std.mem.eql(u8, derived_public[0..], expected_public[0..])) {
@@ -151,6 +154,7 @@ pub const HelloState = struct {
             const auth_ptr = try allocator.create(ClientAuth);
             errdefer allocator.destroy(auth_ptr);
             auth_ptr.* = .{ .key_pair = key_pair };
+            zeroKeyPair(&key_pair);
             auth_state = auth_ptr;
         }
 

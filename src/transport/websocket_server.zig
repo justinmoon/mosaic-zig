@@ -107,6 +107,12 @@ const HandlerState = struct {
         self.result.hello_auth_seen = true;
         self.result.hello_auth_valid = valid;
     }
+
+    fn snapshot(self: *HandlerState) ServerResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.result;
+    }
 };
 
 const Handler = struct {
@@ -326,13 +332,13 @@ pub const Server = struct {
     }
 
     pub fn wait(self: *Server) !ServerResult {
-        var result: ServerResult = .{};
-        if (self.state) |state_ptr| {
-            result = state_ptr.result;
-        }
-        defer self.cleanup();
         self.stop();
         self.thread.join();
+        var result: ServerResult = .{};
+        if (self.state) |state_ptr| {
+            result = state_ptr.snapshot();
+        }
+        defer self.cleanup();
         return result;
     }
 
