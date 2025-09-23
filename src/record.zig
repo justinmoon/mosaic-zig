@@ -10,6 +10,7 @@ const ADDR_NONCE_OFFSET: usize = 48;
 const ID_HASH_OFFSET: usize = 8;
 const ID_TIMESTAMP_OFFSET: usize = 0;
 const TIMESTAMP_OFFSET: usize = 128;
+const KIND_OFFSET: usize = 56;
 const SIGNING_KEY_OFFSET: usize = 96;
 const AUTHOR_KEY_OFFSET: usize = 64;
 const FLAGS_OFFSET: usize = 136;
@@ -17,9 +18,24 @@ const LEN_T_OFFSET: usize = 144;
 const LEN_S_OFFSET: usize = 146;
 const LEN_P_OFFSET: usize = 148;
 
-inline fn paddedLen(len: usize) usize {
+pub inline fn paddedLen(len: usize) usize {
     return (len + 7) & ~@as(usize, 7);
 }
+
+pub const RecordLayout = struct {
+    pub const hashable_start = HASHABLE_START;
+    pub const id_timestamp_offset = ID_TIMESTAMP_OFFSET;
+    pub const id_hash_offset = ID_HASH_OFFSET;
+    pub const address_nonce_offset = ADDR_NONCE_OFFSET;
+    pub const kind_offset = KIND_OFFSET;
+    pub const author_key_offset = AUTHOR_KEY_OFFSET;
+    pub const signing_key_offset = SIGNING_KEY_OFFSET;
+    pub const timestamp_offset = TIMESTAMP_OFFSET;
+    pub const len_t_offset = LEN_T_OFFSET;
+    pub const len_s_offset = LEN_S_OFFSET;
+    pub const len_p_offset = LEN_P_OFFSET;
+    pub const header_len = HEADER_LEN;
+};
 
 inline fn readLittle(comptime T: type, bytes: []const u8, offset: usize) T {
     const len = @sizeOf(T);
