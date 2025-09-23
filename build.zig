@@ -97,11 +97,50 @@ pub fn build(b: *std.Build) void {
     const install_lib = b.addInstallArtifact(static_lib, .{});
     b.getInstallStep().dependOn(&install_lib.step);
 
+    const ws_transport_module = b.createModule(.{
+        .root_source_file = b.path("src/transport/websocket_mosaic.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const ws_server_module = b.createModule(.{
+        .root_source_file = b.path("src/transport/websocket_server.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ws_server_module.addImport("mosaic", lib_module);
+    ws_server_module.addImport("websocket", websocket_module);
+    ws_transport_module.addImport("mosaic", lib_module);
+    ws_transport_module.addImport("websocket", websocket_module);
+    ws_transport_module.addImport("websocket_server", ws_server_module);
+
+    const cli_exe = b.addExecutable(.{
+        .name = "mo",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cli/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    cli_exe.root_module.addImport("mosaic", lib_module);
+    cli_exe.root_module.addImport("websocket_transport", ws_transport_module);
+    cli_exe.root_module.addImport("websocket_server", ws_server_module);
+    cli_exe.linkLibrary(static_lib);
+
+    const install_cli = b.addInstallArtifact(cli_exe, .{});
+    b.getInstallStep().dependOn(&install_cli.step);
+
+    const run_cli = b.addRunArtifact(cli_exe);
+    if (b.args) |args| run_cli.addArgs(args);
+    const cli_step = b.step("cli", "Run the Mosaic CLI");
+    cli_step.dependOn(&run_cli.step);
+
     const test_step = b.step("test", "Run all Zig tests");
     const shared_imports = [_]ModuleImport{
         .{ .name = "lmdb", .module = lmdb_module },
         .{ .name = "websocket", .module = websocket_module },
         .{ .name = "mosaic", .module = lib_module },
+        .{ .name = "websocket_transport", .module = ws_transport_module },
+        .{ .name = "websocket_server", .module = ws_server_module },
     };
 
     addZigTestsForDir(b, test_step, "src", target, optimize, shared_imports[0..]) catch |err| {

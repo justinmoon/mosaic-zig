@@ -5,7 +5,7 @@ const protocol = mosaic.protocol;
 const Ed25519Blake3 = mosaic.Ed25519Blake3;
 const printable = mosaic.printable;
 const base64 = std.base64;
-const mock_server = @import("websocket_server.zig");
+const mock_server = @import("websocket_server");
 const ascii = std.ascii;
 
 pub const ConnectOptions = struct {
