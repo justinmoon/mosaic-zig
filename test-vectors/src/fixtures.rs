@@ -1,6 +1,6 @@
 use mosaic_core::{
-    Kind, OwnedRecord, RecordAddressData, RecordFlags, RecordParts, RecordSigningData, SecretKey,
-    Timestamp, EMPTY_TAG_SET,
+    Kind, OwnedRecord, OwnedTag, RecordAddressData, RecordFlags, RecordParts, RecordSigningData,
+    SecretKey, Timestamp, EMPTY_TAG_SET,
 };
 
 pub fn sample_seed() -> [u8; 32] {
@@ -48,4 +48,38 @@ pub fn sample_record() -> Result<OwnedRecord, mosaic_core::Error> {
         tag_set: &*EMPTY_TAG_SET,
         payload,
     })
+}
+
+pub fn microblog_signing_seed() -> [u8; 32] {
+    [
+        0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50,
+        0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x5B, 0x5C, 0x5D, 0x5E, 0x5F,
+        0x60, 0x61,
+    ]
+}
+
+pub fn microblog_author_seed() -> [u8; 32] {
+    [
+        0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F, 0x80,
+        0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F,
+        0x90, 0x91,
+    ]
+}
+
+pub fn microblog_payload() -> &'static str {
+    "Hello Mosaic! Visit https://example.com/microblog #vibes"
+}
+
+pub fn microblog_tags(author_public: &mosaic_core::PublicKey) -> Vec<OwnedTag> {
+    let mut tags = Vec::new();
+    tags.push(OwnedTag::new_notify_public_key(author_public));
+    tags.push(OwnedTag::new_content_segment_url(
+        "https://example.com/microblog",
+        18,
+    ));
+    tags
+}
+
+pub fn microblog_timestamp() -> Result<Timestamp, mosaic_core::Error> {
+    Timestamp::from_nanoseconds(1_705_554_321_098_765_432)
 }
