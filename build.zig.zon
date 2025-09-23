@@ -8,6 +8,10 @@
             .url = "https://github.com/LMDB/lmdb/archive/refs/tags/LMDB_0.9.31.tar.gz",
             .hash = "N-V-__8AAHEsCACb_b9D1HnCysDKIhKFOrITbxYh9JRh9ix5",
         },
+        .websocket = .{
+            .url = "git+https://github.com/justinmoon/websocket.zig#ee1252cbae1853f852839fd721a0a1e5194ccea3",
+            .hash = "websocket-0.1.0-ZPISdf6JAwBAIJjeNbQ_TRsS8Oa6GbDA5oNsKn31P9zP",
+        },
     },
     .paths = .{
         "build.zig",
