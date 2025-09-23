@@ -4,6 +4,7 @@ const mosaic = @import("mosaic");
 const protocol = mosaic.protocol;
 const Ed25519Blake3 = mosaic.Ed25519Blake3;
 const printable = mosaic.printable;
+const base64 = std.base64;
 const mock_server = @import("websocket_server.zig");
 const ascii = std.ascii;
 
@@ -394,7 +395,7 @@ test "parseHelloAck extracts Mosaic headers" {
 }
 
 fn hexToBytesAlloc(allocator: std.mem.Allocator, hex: []const u8) ![]u8 {
-    if (hex.len % 2 != 0) return error.InvalidHex;
+    if (hex.len % 2 != 0) return error.InvalidLength;
     const out = try allocator.alloc(u8, hex.len / 2);
     errdefer allocator.free(out);
     _ = try std.fmt.hexToBytes(out, hex);
@@ -404,13 +405,22 @@ fn hexToBytesAlloc(allocator: std.mem.Allocator, hex: []const u8) ![]u8 {
 test "websocket mosaic handshake demo" {
     const allocator = std.testing.allocator;
 
-    const secret_text = "mosec06ayb687prmw8abtuum9bps5hjmfz5ffyft3b4jeznn3htppf3kto";
-    var seed = try printable.decodeSecretKey(secret_text);
-    var kp = try Ed25519Blake3.KeyPair.fromSeed(seed);
-    defer zeroKeyPair(&kp);
-    @memset(seed[0..], 0);
-    const public_bytes = kp.publicKeyBytes();
+    const client_secret_text = "mosec06ayb687prmw8abtuum9bps5hjmfz5ffyft3b4jeznn3htppf3kto";
+    var client_seed = try printable.decodeSecretKey(client_secret_text);
+    var client_kp = try Ed25519Blake3.KeyPair.fromSeed(client_seed);
+    const public_bytes = client_kp.publicKeyBytes();
     var public_text = printable.encodeUserPublicKey(public_bytes);
+    defer zeroKeyPair(&client_kp);
+    @memset(client_seed[0..], 0);
+
+    const server_secret_text = "mosec06ayb687prmw8abtuum9bps5hjmfz5ffyft3b4jeznn3htppf3kto";
+    var server_seed = try printable.decodeSecretKey(server_secret_text);
+    var server_kp = try Ed25519Blake3.KeyPair.fromSeed(server_seed);
+    const server_nonce = "nonce123";
+    const server_signature = try server_kp.sign(server_nonce);
+    var server_auth_buf: [base64.standard.Encoder.calcSize(server_signature.len)]u8 = undefined;
+    const expected_server_auth = base64.standard.Encoder.encode(&server_auth_buf, server_signature[0..]);
+    defer zeroKeyPair(&server_kp);
 
     const apps = [_]u32{0};
     var submission_prefix = [_]u8{0} ** 32;
@@ -421,21 +431,22 @@ test "websocket mosaic handshake demo" {
             .versions = "0,1",
             .features = "chat",
             .authenticate_as = public_text[0..],
-            .server_auth_nonce = "nonce123",
+            .server_auth_nonce = server_nonce,
         },
         .response = .{
             .version = "0",
             .features_accepted = "chat",
-            .server_authentication = "sig",
             .client_auth_nonce = "client-nonce",
             .hello_ack_result = protocol.ResultCode.success,
             .hello_ack_max_version = 0,
             .hello_ack_applications = apps[0..],
             .submission_result_prefix = submission_prefix,
+            .server_secret_seed = server_seed,
         },
     });
     var server_joined = false;
     defer if (!server_joined) server.ensureStopped();
+    @memset(server_seed[0..], 0);
 
     var conn = try connect(allocator, "127.0.0.1", .{
         .port = server.port(),
@@ -443,15 +454,15 @@ test "websocket mosaic handshake demo" {
         .features = "chat",
         .host_header = "127.0.0.1",
         .authenticate_as = public_text[0..],
-        .authenticate_secret = secret_text,
-        .server_auth_nonce = "nonce123",
+        .authenticate_secret = client_secret_text,
+        .server_auth_nonce = server_nonce,
     });
     defer conn.deinit();
 
     const hello = try conn.helloAck();
     try std.testing.expectEqualStrings("0", hello.version);
     try std.testing.expectEqualStrings("chat", hello.features_accepted.?);
-    try std.testing.expectEqualStrings("sig", hello.server_authentication.?);
+    try std.testing.expectEqualStrings(expected_server_auth, hello.server_authentication.?);
     try std.testing.expectEqualStrings("client-nonce", hello.client_authenticate_nonce.?);
 
     try std.testing.expect(conn.helloState().hello_auth_sent);

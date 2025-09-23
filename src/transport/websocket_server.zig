@@ -4,6 +4,7 @@ const mosaic = @import("mosaic");
 const protocol = mosaic.protocol;
 const printable = mosaic.printable;
 const Ed25519Blake3 = mosaic.Ed25519Blake3;
+const base64 = std.base64;
 
 pub const ExpectHeaders = struct {
     versions: []const u8,
@@ -16,12 +17,12 @@ pub const ExpectHeaders = struct {
 pub const ResponseConfig = struct {
     version: []const u8,
     features_accepted: []const u8,
-    server_authentication: []const u8,
     client_auth_nonce: []const u8,
     hello_ack_result: protocol.ResultCode = .success,
     hello_ack_max_version: u8,
     hello_ack_applications: []const u32,
     submission_result_prefix: ?[32]u8 = null,
+    server_secret_seed: ?[32]u8 = null,
 };
 
 pub const Config = struct {
@@ -55,6 +56,7 @@ const HandlerState = struct {
     expect_public_key: ?[32]u8,
     records: std.AutoHashMap([48]u8, []u8),
     mutex: std.Thread.Mutex = .{},
+    server_key_pair: ?Ed25519Blake3.KeyPair = null,
 
     fn init(allocator: std.mem.Allocator, config: Config) !*HandlerState {
         const state = try allocator.create(HandlerState);
@@ -72,7 +74,13 @@ const HandlerState = struct {
             .result = .{},
             .expect_public_key = expect_public,
             .records = std.AutoHashMap([48]u8, []u8).init(allocator),
+            .server_key_pair = null,
         };
+
+        if (config.response.server_secret_seed) |seed| {
+            const key_pair = try Ed25519Blake3.KeyPair.fromSeed(seed);
+            state.server_key_pair = key_pair;
+        }
         return state;
     }
 
@@ -82,6 +90,9 @@ const HandlerState = struct {
             self.allocator.free(entry.value_ptr.*);
         }
         self.records.deinit();
+        if (self.server_key_pair) |*kp| {
+            zeroKeyPair(kp);
+        }
     }
 
     fn noteHandshake(self: *HandlerState, result: ServerResult) void {
@@ -120,10 +131,12 @@ const Handler = struct {
         result.saw_subprotocol = std.mem.eql(u8, subprotocol, expect.subprotocol);
         if (!result.saw_subprotocol) return ServerError.InvalidHeader;
 
+        var server_nonce_bytes: ?[]const u8 = null;
         if (expect.server_auth_nonce) |nonce| {
             const header = handshake.headers.get("x-mosaic-server-authenticate-nonce") orelse return ServerError.MissingHeader;
             result.saw_server_nonce = std.mem.eql(u8, header, nonce);
             if (!result.saw_server_nonce) return ServerError.InvalidHeader;
+            server_nonce_bytes = header;
         } else {
             result.saw_server_nonce = true;
         }
@@ -142,8 +155,16 @@ const Handler = struct {
         handshake.res_headers.add("Sec-WebSocket-Protocol", expect.subprotocol);
         handshake.res_headers.add("X-Mosaic-Version", state.config.response.version);
         handshake.res_headers.add("X-Mosaic-Features-Accepted", state.config.response.features_accepted);
-        handshake.res_headers.add("X-Mosaic-Server-Authentication", state.config.response.server_authentication);
         handshake.res_headers.add("X-Mosaic-Client-Authenticate-Nonce", state.config.response.client_auth_nonce);
+
+        if (server_nonce_bytes) |nonce_bytes| {
+            if (state.server_key_pair) |*kp| {
+                const signature = try kp.sign(nonce_bytes);
+                var encoded_buf: [base64.standard.Encoder.calcSize(signature.len)]u8 = undefined;
+                const encoded = base64.standard.Encoder.encode(&encoded_buf, signature[0..]);
+                handshake.res_headers.add("X-Mosaic-Server-Authentication", encoded);
+            }
+        }
 
         state.noteHandshake(result);
 
@@ -274,6 +295,11 @@ const Handler = struct {
         }
     }
 };
+
+fn zeroKeyPair(kp: *Ed25519Blake3.KeyPair) void {
+    @memset(kp.inner.secret_key.bytes[0..], 0);
+    @memset(kp.inner.public_key.bytes[0..], 0);
+}
 
 const WsServer = websocket.server.Server(Handler);
 
