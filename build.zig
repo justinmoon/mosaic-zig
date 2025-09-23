@@ -72,18 +72,19 @@ pub fn build(b: *std.Build) void {
     const websocket_dep = b.dependency("websocket", .{ .target = target, .optimize = optimize });
     const websocket_module = websocket_dep.module("websocket");
 
-    const shared_imports = [_]ModuleImport{
-        .{ .name = "lmdb", .module = lmdb_module },
-        .{ .name = "websocket", .module = websocket_module },
-    };
-
     // Core module shared between the installable library and the test step.
     const lib_module = b.createModule(.{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
     });
-    for (shared_imports) |imp| {
+
+    const lib_imports = [_]ModuleImport{
+        .{ .name = "lmdb", .module = lmdb_module },
+        .{ .name = "websocket", .module = websocket_module },
+    };
+
+    for (lib_imports) |imp| {
         lib_module.addImport(imp.name, imp.module);
     }
 
@@ -97,6 +98,12 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&install_lib.step);
 
     const test_step = b.step("test", "Run all Zig tests");
+    const shared_imports = [_]ModuleImport{
+        .{ .name = "lmdb", .module = lmdb_module },
+        .{ .name = "websocket", .module = websocket_module },
+        .{ .name = "mosaic", .module = lib_module },
+    };
+
     addZigTestsForDir(b, test_step, "src", target, optimize, shared_imports[0..]) catch |err| {
         std.debug.panic("failed to enumerate tests: {s}", .{@errorName(err)});
     };
