@@ -17,7 +17,7 @@ pub const ExpectHeaders = struct {
 pub const ResponseConfig = struct {
     version: []const u8,
     features_accepted: []const u8,
-    client_auth_nonce: []const u8,
+    client_auth_nonce: ?[]const u8 = null,
     hello_ack_result: protocol.ResultCode = .success,
     hello_ack_max_version: u8,
     hello_ack_applications: []const u32,
@@ -161,7 +161,9 @@ const Handler = struct {
         handshake.res_headers.add("Sec-WebSocket-Protocol", expect.subprotocol);
         handshake.res_headers.add("X-Mosaic-Version", state.config.response.version);
         handshake.res_headers.add("X-Mosaic-Features-Accepted", state.config.response.features_accepted);
-        handshake.res_headers.add("X-Mosaic-Client-Authenticate-Nonce", state.config.response.client_auth_nonce);
+        if (state.config.response.client_auth_nonce) |nonce| {
+            handshake.res_headers.add("X-Mosaic-Client-Authenticate-Nonce", nonce);
+        }
 
         if (server_nonce_bytes) |nonce_bytes| {
             if (state.server_key_pair) |*kp| {
@@ -177,7 +179,7 @@ const Handler = struct {
         return Handler{
             .state = state,
             .conn = conn,
-            .expect_hello_auth = state.config.response.client_auth_nonce.len != 0,
+            .expect_hello_auth = state.config.response.client_auth_nonce != null,
         };
     }
 
@@ -230,7 +232,10 @@ const Handler = struct {
             self.state.noteHelloAuth(false);
             return ServerError.InvalidHelloAuthPayload;
         }
-        const nonce = self.state.config.response.client_auth_nonce;
+        const nonce = self.state.config.response.client_auth_nonce orelse {
+            self.state.noteHelloAuth(false);
+            return ServerError.InvalidHelloAuthPayload;
+        };
         if (nonce.len == 0) {
             self.state.noteHelloAuth(false);
             return ServerError.InvalidHelloAuthPayload;
@@ -361,19 +366,27 @@ pub const Server = struct {
 };
 
 pub fn start(allocator: std.mem.Allocator, config: Config) !Server {
+    const port = try findOpenPort();
+    return startAt(allocator, config, "127.0.0.1", port);
+}
+
+pub fn startAt(
+    allocator: std.mem.Allocator,
+    config: Config,
+    address: []const u8,
+    port: u16,
+) !Server {
     var state = try HandlerState.init(allocator, config);
     errdefer {
         state.deinit();
         allocator.destroy(state);
     }
 
-    const port = try findOpenPort();
-
     const ws_ptr = try allocator.create(WsServer);
     errdefer allocator.destroy(ws_ptr);
     ws_ptr.* = try WsServer.init(allocator, .{
         .port = port,
-        .address = "127.0.0.1",
+        .address = address,
         .worker_count = 1,
     });
 
