@@ -1,9 +1,11 @@
 const std = @import("std");
 const app = @import("app.zig");
-
+const mosaic = @import("mosaic");
+const crypto = mosaic.crypto;
+const printable = mosaic.printable;
 const Allocator = std.mem.Allocator;
 
-const default_host = "relay.justinmoon.com";
+const default_host = "mosaic.justinmoon.com";
 const default_path = "/";
 const default_versions = "0";
 const default_features = "chat";
@@ -134,6 +136,11 @@ fn run() !void {
         return;
     }
 
+    if (std.mem.eql(u8, command, "keygen")) {
+        try handleKeygen(allocator, &env);
+        return;
+    }
+
     var credentials = try loadCredentials(allocator, &env);
 
     const storage_path = try resolveStoragePath(allocator, &env, storage_path_opt);
@@ -227,6 +234,44 @@ fn handleTimeline(allocator: Allocator, app_instance: *app.App, args: []const []
     try app_instance.timeline(stdout, .{ .limit = limit, .references = references });
 }
 
+fn handleKeygen(allocator: Allocator, env: *std.process.EnvMap) !void {
+    var seed: [crypto.Ed25519Blake3.seed_length]u8 = undefined;
+    std.crypto.random.bytes(&seed);
+
+    const key_pair = try crypto.Ed25519Blake3.KeyPair.fromSeed(seed);
+    const secret_text = printable.encodeSecretKey(seed);
+    const public_text = printable.encodeUserPublicKey(key_pair.publicKeyBytes());
+
+    const secret_path = try resolveSecretPath(allocator, env);
+    defer allocator.free(secret_path);
+
+    if (std.fs.path.dirname(secret_path)) |dir_path| {
+        try std.fs.cwd().makePath(dir_path);
+    }
+
+    if (std.fs.cwd().access(secret_path, .{})) {
+        const stdout = stdoutWriter();
+        try std.fmt.format(stdout, "mosec already exists at {s}\n", .{secret_path});
+        try std.fmt.format(stdout, "Use MOSEC env var to override or remove the file to generate anew.\n", .{});
+        return;
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+
+    var file = try std.fs.cwd().createFile(secret_path, .{ .truncate = true, .mode = 0o600 });
+    defer file.close();
+    try file.writeAll(secret_text[0..]);
+    try file.writeAll("\n");
+
+    @memset(seed[0..], 0);
+
+    const stdout = stdoutWriter();
+    try std.fmt.format(stdout, "saved mosec0 to {s}\n", .{secret_path});
+    try std.fmt.format(stdout, "mosec0: {s}\n", .{secret_text});
+    try std.fmt.format(stdout, "mopub0: {s}\n", .{public_text});
+}
+
 fn parsePort(text: []const u8) !u16 {
     const value = try std.fmt.parseUnsigned(u16, text, 10);
     if (value == 0) return error.InvalidPort;
@@ -259,54 +304,46 @@ fn resolvePath(allocator: Allocator, env: *std.process.EnvMap, path_text: []cons
 }
 
 fn loadCredentials(allocator: Allocator, env: *std.process.EnvMap) !app.Credentials {
-    if (env.get("MOSAIC_MOPUB0")) |mopub| {
-        const mosec = env.get("MOSAIC_MOSEC0") orelse return error.MissingCredentials;
-        return app.Credentials.init(allocator, mopub, mosec);
-    }
-    if (env.get("MOPUB0")) |mopub| {
-        const mosec = env.get("MOSEC0") orelse return error.MissingCredentials;
-        return app.Credentials.init(allocator, mopub, mosec);
+    if (env.get("MOSEC")) |secret_env| {
+        const env_slice = std.mem.sliceTo(secret_env, 0);
+        const trimmed = std.mem.trim(u8, env_slice, " \t\r\n");
+        if (trimmed.len == 0) return error.MissingCredentials;
+        return credentialsFromSecret(allocator, trimmed);
     }
 
-    if (env.get("MOSAIC_KEYS_PATH")) |raw_path| {
-        const resolved = try resolvePath(allocator, env, raw_path);
-        defer allocator.free(resolved);
-        return loadCredentialsFromFile(allocator, resolved);
-    }
+    const secret_path = try resolveSecretPath(allocator, env);
+    defer allocator.free(secret_path);
 
-    const home = env.get("HOME") orelse return error.MissingCredentials;
-    const default_keys_path = try std.fmt.allocPrint(allocator, "{s}/.config/mosaic/keys.json", .{home});
-    defer allocator.free(default_keys_path);
-    return loadCredentialsFromFile(allocator, default_keys_path);
-}
-
-fn loadCredentialsFromFile(allocator: Allocator, path_text: []const u8) !app.Credentials {
-    var file = try std.fs.cwd().openFile(path_text, .{});
+    var file = std.fs.cwd().openFile(secret_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return error.MissingCredentials,
+        else => return err,
+    };
     defer file.close();
-    const contents = try file.readToEndAlloc(allocator, 16 * 1024);
+
+    const contents = try file.readToEndAlloc(allocator, 8 * 1024);
     defer allocator.free(contents);
 
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, contents, .{});
-    defer parsed.deinit();
+    const trimmed = std.mem.trim(u8, contents, " \t\r\n");
+    if (trimmed.len == 0) return error.MissingCredentials;
+    return credentialsFromSecret(allocator, trimmed);
+}
 
-    const obj = parsed.value.object;
-    const mopub_value = obj.get("mopub") orelse return error.MissingCredentials;
-    const mosec_value = obj.get("mosec") orelse return error.MissingCredentials;
+fn credentialsFromSecret(allocator: Allocator, secret_text: []const u8) !app.Credentials {
+    var seed = try printable.decodeSecretKey(secret_text);
+    defer @memset(seed[0..], 0);
+    const key_pair = try crypto.Ed25519Blake3.KeyPair.fromSeed(seed);
+    const public_text = printable.encodeUserPublicKey(key_pair.publicKeyBytes());
+    return app.Credentials.init(allocator, public_text[0..], secret_text);
+}
 
-    const mopub_str = switch (mopub_value) {
-        .string => |s| s,
-        else => return error.MissingCredentials,
-    };
-    const mosec_str = switch (mosec_value) {
-        .string => |s| s,
-        else => return error.MissingCredentials,
-    };
-
-    return app.Credentials.init(allocator, mopub_str, mosec_str);
+fn resolveSecretPath(allocator: Allocator, env: *std.process.EnvMap) ![]u8 {
+    if (env.get("MOSAIC_SECRET_PATH")) |raw| {
+        return try resolvePath(allocator, env, raw);
+    }
+    const home = env.get("HOME") orelse return error.MissingHome;
+    return try std.fmt.allocPrint(allocator, "{s}/.config/mosaic/mosec.key", .{home});
 }
 
 fn printUsage(writer: anytype) !void {
-    try std.fmt.format(writer,
-        "Usage:\n  mo publish --text <message>\n  mo publish --stdin\n  mo timeline [--limit N] [--reference moref0...]\n\nCommon options:\n  --server <host>        Override server host\n  --port <port>          Override server port\n  --no-tls               Disable TLS for local testing\n  --storage <path>       Override storage directory\n",
-        .{});
+    try std.fmt.format(writer, "Usage:\n  mo keygen\n  mo publish --text <message>\n  mo publish --stdin\n  mo timeline [--limit N] [--reference moref0...]\n\nCommon options:\n  --server <host>        Override server host\n  --port <port>          Override server port\n  --no-tls               Disable TLS for local testing\n  --storage <path>       Override storage directory\n", .{});
 }

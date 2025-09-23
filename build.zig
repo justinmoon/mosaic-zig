@@ -134,6 +134,24 @@ pub fn build(b: *std.Build) void {
     const cli_step = b.step("cli", "Run the Mosaic CLI");
     cli_step.dependOn(&run_cli.step);
 
+    const server_exe = b.addExecutable(.{
+        .name = "mos",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/server/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    server_exe.root_module.addImport("mosaic", lib_module);
+    server_exe.root_module.addImport("websocket_server", ws_server_module);
+    const install_server = b.addInstallArtifact(server_exe, .{});
+    b.getInstallStep().dependOn(&install_server.step);
+
+    const run_server = b.addRunArtifact(server_exe);
+    if (b.args) |args| run_server.addArgs(args);
+    const server_step = b.step("mos", "Run the Mosaic server");
+    server_step.dependOn(&run_server.step);
+
     const test_step = b.step("test", "Run all Zig tests");
     const shared_imports = [_]ModuleImport{
         .{ .name = "lmdb", .module = lmdb_module },

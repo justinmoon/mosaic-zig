@@ -115,7 +115,14 @@ pub const App = struct {
         var conn = try self.connectToServer();
         defer conn.deinit();
         try sendHello(&conn);
-        try awaitHelloAck(self.allocator, &conn);
+        const hello_result = try awaitHelloAck(self.allocator, &conn);
+        switch (hello_result) {
+            .success, .accepted => {},
+            else => {
+                try std.fmt.format(writer, "handshake rejected: {s}\n", .{@tagName(hello_result)});
+                return error.HelloRejected;
+            },
+        }
 
         try sendSubmission(&conn, record_buf);
         const result = try awaitSubmissionResult(self.allocator, &conn);
@@ -139,14 +146,33 @@ pub const App = struct {
         var conn = try self.connectToServer();
         defer conn.deinit();
         try sendHello(&conn);
-        try awaitHelloAck(self.allocator, &conn);
+        const hello_result = try awaitHelloAck(self.allocator, &conn);
+        switch (hello_result) {
+            .success, .accepted => {},
+            else => {
+                try std.fmt.format(writer, "handshake rejected: {s}\n", .{@tagName(hello_result)});
+                return error.HelloRejected;
+            },
+        }
 
         if (options.references.len != 0) {
             try sendGet(&conn, options.references);
-            try harvestRecords(self.allocator, &conn, storage_ptr);
+            _ = harvestRecords(
+                self.allocator,
+                &conn,
+                storage_ptr,
+                options.references.len,
+                self.connect.timeout_ms,
+            ) catch |err| switch (err) {
+                error.MissingReferences => {
+                    try std.fmt.format(writer, "missing references\n", .{});
+                    return err;
+                },
+                else => return err,
+            };
         }
 
-        const max_ts = @as(u64, @intCast(timestamp_ns.Timestamp.max.asNanoseconds()));
+        const max_ts: u64 = @intCast(timestamp_ns.max_nanoseconds);
         var records = try storage_ptr.getByTimestamp(self.allocator, 0, max_ts, options.limit);
         defer records.deinit();
 
@@ -185,6 +211,9 @@ pub const AppError = error{
     MissingText,
     PublishRejected,
     StorageUnavailable,
+    HelloRejected,
+    MissingReferences,
+    HandshakeMissing,
 };
 
 fn sendHello(conn: *transport.Connection) !void {
@@ -196,12 +225,15 @@ fn sendHello(conn: *transport.Connection) !void {
     try conn.sendMessage(&hello);
 }
 
-fn awaitHelloAck(allocator: Allocator, conn: *transport.Connection) !void {
+fn awaitHelloAck(allocator: Allocator, conn: *transport.Connection) !protocol.ResultCode {
     while (true) {
         var msg = try conn.recvMessage();
         defer msg.deinit(allocator);
         switch (msg) {
-            .hello_ack => return,
+            .hello_ack => {
+                const ack_state = conn.helloState().ack_frame orelse return error.HandshakeMissing;
+                return ack_state.result;
+            },
             else => continue,
         }
     }
@@ -236,23 +268,36 @@ fn sendGet(conn: *transport.Connection, references: []const protocol.Reference) 
     try conn.sendMessage(&get_msg);
 }
 
-fn harvestRecords(allocator: Allocator, conn: *transport.Connection, storage: *storage_ns.Storage) !void {
+fn harvestRecords(
+    allocator: Allocator,
+    conn: *transport.Connection,
+    storage: *storage_ns.Storage,
+    expected: usize,
+    timeout_ms: u32,
+) !usize {
+    var received: usize = 0;
     while (true) {
-        var msg = conn.recvMessage() catch |err| {
-            if (err == error.ConnectionClosed) break;
-            return err;
+        const maybe_msg = conn.recvMessageWithTimeout(timeout_ms) catch |err| switch (err) {
+            error.ConnectionClosed => break,
+            else => return err,
         };
+        const msg_ptr = maybe_msg orelse break;
+        var msg = msg_ptr;
         defer msg.deinit(allocator);
         switch (msg) {
             .record => |record_msg| {
                 try storage.put(record_msg.record_bytes);
-                continue;
+                received += 1;
+                if (expected != 0 and received >= expected) return received;
             },
-            .submission_result => continue,
-            .hello_ack => continue,
+            .submission_result => {},
+            .hello_ack => {},
             else => break,
         }
     }
+
+    if (expected != 0 and received < expected) return error.MissingReferences;
+    return received;
 }
 
 fn currentTimestamp() !timestamp_ns.Timestamp {

@@ -16,6 +16,7 @@ mkdir -p "$ZIG_GLOBAL_CACHE_DIR"
 zig fmt --check build.zig build.zig.zon src
 zig build
 zig build test
+./scripts/binary_test.sh
 (
   cd test-vectors
   cargo check

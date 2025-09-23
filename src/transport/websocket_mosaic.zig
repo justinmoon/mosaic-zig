@@ -55,27 +55,42 @@ pub const Connection = struct {
     }
 
     pub fn recvMessage(self: *Connection) !protocol.Message {
-        while (true) {
-            const ws_message = try self.client.read() orelse continue;
-            defer self.client.done(ws_message);
+        return (try self.recvMessageWithTimeout(null)) orelse unreachable;
+    }
 
-            switch (ws_message.type) {
-                .binary => {
-                    const decoded = try protocol.decodeMessage(self.allocator, ws_message.data);
-                    if (decoded.messageType() == protocol.MessageType.hello_ack) {
-                        try self.hello_state.setHelloAck(self.allocator, decoded.hello_ack);
-                    }
-                    return decoded;
-                },
-                .ping => {
-                    const payload = try self.allocator.dupe(u8, ws_message.data);
-                    defer self.allocator.free(payload);
-                    try self.client.writePong(payload);
-                    continue;
-                },
-                .pong => continue,
-                .close => return error.ConnectionClosed,
-                .text => return error.UnexpectedTextFrame,
+    pub fn recvMessageWithTimeout(self: *Connection, timeout_ms: ?u32) !?protocol.Message {
+        const deadline: ?i64 = if (timeout_ms) |ms|
+            std.time.milliTimestamp() + @as(i64, ms)
+        else
+            null;
+
+        while (true) {
+            if (deadline) |limit| {
+                if (std.time.milliTimestamp() >= limit) return null;
+            }
+
+            const maybe_message = try self.client.read();
+            if (maybe_message) |ws_message| {
+                defer self.client.done(ws_message);
+                switch (ws_message.type) {
+                    .binary => {
+                        const decoded = try protocol.decodeMessage(self.allocator, ws_message.data);
+                        if (decoded.messageType() == protocol.MessageType.hello_ack) {
+                            try self.hello_state.setHelloAck(self.allocator, decoded.hello_ack);
+                        }
+                        return decoded;
+                    },
+                    .ping => {
+                        const payload = try self.allocator.dupe(u8, ws_message.data);
+                        defer self.allocator.free(payload);
+                        try self.client.writePong(payload);
+                    },
+                    .pong => {},
+                    .close => return error.ConnectionClosed,
+                    .text => return error.UnexpectedTextFrame,
+                }
+            } else {
+                std.Thread.sleep(1_000_000);
             }
         }
     }
