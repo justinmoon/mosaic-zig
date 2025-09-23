@@ -393,6 +393,14 @@ test "parseHelloAck extracts Mosaic headers" {
     try testing.expect(hello.service_url == null);
 }
 
+fn hexToBytesAlloc(allocator: std.mem.Allocator, hex: []const u8) ![]u8 {
+    if (hex.len % 2 != 0) return error.InvalidHex;
+    const out = try allocator.alloc(u8, hex.len / 2);
+    errdefer allocator.free(out);
+    _ = try std.fmt.hexToBytes(out, hex);
+    return out;
+}
+
 test "websocket mosaic handshake demo" {
     const allocator = std.testing.allocator;
 
@@ -426,7 +434,8 @@ test "websocket mosaic handshake demo" {
             .submission_result_prefix = submission_prefix,
         },
     });
-    defer server.ensureStopped();
+    var server_joined = false;
+    defer if (!server_joined) server.ensureStopped();
 
     var conn = try connect(allocator, "127.0.0.1", .{
         .port = server.port(),
@@ -459,10 +468,54 @@ test "websocket mosaic handshake demo" {
     try std.testing.expectEqual(@as(usize, 1), ack_summary.applications.len);
     try std.testing.expectEqual(@as(u32, 0), ack_summary.applications[0]);
 
-    var second = try conn.recvMessage();
-    defer second.deinit(allocator);
-    try std.testing.expectEqual(protocol.MessageType.submission_result, second.messageType());
+    const vectors_json = try std.fs.cwd().readFileAlloc(allocator, "testdata/test_vectors.json", 1 << 20);
+    defer allocator.free(vectors_json);
 
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, vectors_json, .{});
+    defer parsed.deinit();
+
+    const record_hex = parsed.value.object.get("record").?.object.get("record_hex").?.string;
+    const record_bytes_const = try hexToBytesAlloc(allocator, record_hex);
+    defer allocator.free(record_bytes_const);
+
+    const submission_bytes = try allocator.alloc(u8, record_bytes_const.len);
+    @memcpy(submission_bytes, record_bytes_const);
+    const submission_record = try protocol.Record.fromBytes(record_bytes_const);
+
+    const submission_message = protocol.Message{ .submission = .{
+        .record_bytes = submission_bytes,
+        .record = submission_record,
+    } };
+    try conn.sendMessage(&submission_message);
+    allocator.free(submission_bytes);
+
+    var submission_result_msg = try conn.recvMessage();
+    defer submission_result_msg.deinit(allocator);
+    try std.testing.expectEqual(protocol.MessageType.submission_result, submission_result_msg.messageType());
+    const submission_result = submission_result_msg.submission_result;
+    try std.testing.expectEqual(protocol.ResultCode.accepted, submission_result.result);
+
+    var record_id: [48]u8 = undefined;
+    @memcpy(record_id[0..], record_bytes_const[0..48]);
+
+    var references = try allocator.alloc(protocol.Reference, 1);
+    defer allocator.free(references);
+    references[0] = .{ .bytes = record_id };
+
+    const get_message = protocol.Message{ .get = .{
+        .query_id = protocol.QueryId.fromInt(0x1234),
+        .references = references,
+    } };
+    try conn.sendMessage(&get_message);
+
+    var record_response = try conn.recvMessage();
+    defer record_response.deinit(allocator);
+    try std.testing.expectEqual(protocol.MessageType.record, record_response.messageType());
+    const record_msg = record_response.record;
+    try std.testing.expectEqual(@as(u16, 0x1234), record_msg.query_id.toInt());
+    try std.testing.expectEqualSlices(u8, record_bytes_const, record_msg.record_bytes);
+
+    server_joined = true;
     const server_result = try server.wait();
     try std.testing.expect(server_result.saw_versions);
     try std.testing.expect(server_result.saw_features);
