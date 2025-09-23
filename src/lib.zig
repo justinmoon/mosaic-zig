@@ -16,3 +16,4 @@ pub const crypto = struct {
 };
 
 pub const record = @import("record.zig");
+pub const storage = @import("storage.zig");
